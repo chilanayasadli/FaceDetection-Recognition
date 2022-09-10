@@ -1,0 +1,281 @@
+import face_recognition
+import imutils
+import pickle
+import time
+import cv2
+import os
+import mediapipe as mp
+import math
+import numpy as np
+import datetime
+
+x1 = 0
+ 
+# distance from camera to object(face) measured
+# centimeter
+Known_distance = 76.2
+ 
+# width of face in the real world or Object Plane
+# centimeter
+Known_width = 14.3
+ 
+# Colors
+GREEN = (0, 255, 0)
+RED = (0, 0, 255)
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+ 
+# defining the fonts
+fonts = cv2.FONT_HERSHEY_COMPLEX
+ 
+# face detector object
+face_detector = cv2.CascadeClassifier("data/haarcascades/haarcascade_frontalface_default.xml")
+
+# reading reference_image from directory
+ref_image = cv2.imread("Chilanay.png")
+
+
+#  Direction and number 
+dir = 0  # 0 To lie down ,1 To sit up 
+count = 0
+fall_count=0
+
+def Focal_Length_Finder(measured_distance, real_width, width_in_rf_image):
+ 
+    # finding the focal length
+    focal_length = (width_in_rf_image * measured_distance) / real_width
+    return focal_length
+ 
+# distance estimation function
+def Distance_finder(Focal_Length, real_face_width, face_width_in_frame):
+ 
+    distance = (real_face_width * Focal_Length)/face_width_in_frame
+ 
+    # return the distance
+    return distance
+ 
+def face_data(image):
+ 
+    face_width = 0  # making face width to zero
+ 
+    # converting color image ot gray scale image
+    gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+ 
+    # detecting face in the image
+    faces = face_detector.detectMultiScale(gray_image, 1.3, 5)
+   
+    # looping through the faces detect in the image
+    # getting coordinates x, y , width and height
+    for (x, y, h, w) in faces:
+ 
+        # draw the rectangle on the face
+        cv2.rectangle(image, (x, y), (x+w, y+h), GREEN, 2)
+ 
+        # getting face width in the pixels
+        face_width = w
+        global x1
+        x1 = x
+
+    # return the face width in pixel
+    return face_width
+ 
+    
+class poseDetector() :
+    
+    def __init__(self, mode=False, complexity=1, smooth_landmarks=True,
+                 enable_segmentation=False, smooth_segmentation=True,
+                 detectionCon=0.5, trackCon=0.5):
+        
+        self.mode = mode 
+        self.complexity = complexity
+        self.smooth_landmarks = smooth_landmarks
+        self.enable_segmentation = enable_segmentation
+        self.smooth_segmentation = smooth_segmentation
+        self.detectionCon = detectionCon
+        self.trackCon = trackCon
+        
+        self.mpDraw = mp.solutions.drawing_utils
+        self.mpPose = mp.solutions.pose
+        self.pose = self.mpPose.Pose(self.mode, self.complexity, self.smooth_landmarks,
+                                     self.enable_segmentation, self.smooth_segmentation,
+                                     self.detectionCon, self.trackCon)
+        
+        
+    def findPose (self, img, draw=True):
+        imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        self.results = self.pose.process(imgRGB)
+        
+        if self.results.pose_landmarks:
+            if draw:
+                self.mpDraw.draw_landmarks(img,self.results.pose_landmarks,
+                                           self.mpPose.POSE_CONNECTIONS)
+                
+        return img
+    
+    def findPosition(self, img, draw=True):
+        self.lmList = []
+        if self.results.pose_landmarks:
+            for id, lm in enumerate(self.results.pose_landmarks.landmark):
+                #finding height, width of the image printed
+                h, w, c = img.shape
+                #Determining the pixels of the landmarks
+                cx, cy = int(lm.x * w), int(lm.y * h)
+                self.lmList.append([id, cx, cy])
+                if draw:
+                    cv2.circle(img, (cx, cy), 5, (255,0,0), cv2.FILLED)
+        return self.lmList
+        
+    def findAngle(self, img, p1, p2, p3, draw=True):   
+        #Get the landmarks
+        x1, y1 = self.lmList[p1][1:]
+        x2, y2 = self.lmList[p2][1:]
+        x3, y3 = self.lmList[p3][1:]
+        
+        #Calculate Angle
+        angle = math.degrees(math.atan2(y3-y2, x3-x2) - 
+                             math.atan2(y1-y2, x1-x2))
+        if angle < 0:
+            angle += 360
+            if angle > 180:
+                angle = 360 - angle
+        elif angle > 180:
+            angle = 360 - angle
+        # print(angle)
+        
+        #Draw
+        if draw:
+            cv2.line(img, (x1, y1), (x2, y2), (255,255,255), 3)
+            cv2.line(img, (x3, y3), (x2, y2), (255,255,255), 3)
+
+            
+            cv2.circle(img, (x1, y1), 5, (0,0,255), cv2.FILLED)
+            cv2.circle(img, (x1, y1), 15, (0,0,255), 2)
+            cv2.circle(img, (x2, y2), 5, (0,0,255), cv2.FILLED)
+            cv2.circle(img, (x2, y2), 15, (0,0,255), 2)
+            cv2.circle(img, (x3, y3), 5, (0,0,255), cv2.FILLED)
+            cv2.circle(img, (x3, y3), 15, (0,0,255), 2)
+            
+            cv2.putText(img, str(int(angle)), (x2-50, y2+50), 
+                        cv2.FONT_HERSHEY_PLAIN, 2, (0,0,255), 2)
+        return angle
+
+# find the face width(pixels) in the reference_image
+ref_image_face_width = face_data(ref_image)
+
+# get the focal by calling "Focal_Length_Finder"
+# face width in reference(pixels),
+# Known_distance(centimeters),
+# known_width(centimeters)
+Focal_length_found = Focal_Length_Finder(Known_distance, Known_width, ref_image_face_width)
+
+#  Gesture recognizer 
+detector = poseDetector()
+
+def Distance_Xvalue():
+    cap = cv2.VideoCapture(0)
+     # reading the frame from camera
+    ret, frame = cap.read()
+ 
+    # calling face_data function to find
+    # the width of face(pixels) in the frame
+    face_width_in_frame = face_data(frame)
+    
+    # check if the face is zero then not
+    # find the distance
+    if face_width_in_frame != 0:
+        
+        # finding the distance by calling function
+        # Distance distance finder function need
+        # these arguments the Focal_Length,
+        # Known_width(centimeters),
+        # and Known_distance(centimeters)
+        Distance = Distance_finder(Focal_length_found, Known_width, face_width_in_frame)
+        global x1
+        print("Distance=", Distance, "x=", x1)
+        time.sleep(0.1)
+        # draw line as background of text
+        cv2.line(frame, (30, 30), (230, 30), RED, 32)
+        cv2.line(frame, (30, 30), (230, 30), BLACK, 28)
+ 
+        # Drawing Text on the screen
+        cv2.putText(
+            frame, f"Distance: {round(Distance,2)} CM", (30, 35), fonts, 0.6, GREEN, 2)
+        cv2.putText(
+            frame, f"x: {round(530-x1, 2)} CM", (30, 65), fonts, 0.6, GREEN, 2)
+    # closing the camera
+    cap.release()
+    
+    
+def PositionDet_Stickman():
+    #  Open video file 
+    cap = cv2.VideoCapture(0)
+    success, img = cap.read()
+    if success:
+        h, w, c = img.shape
+        #  Recognize posture 
+        img = detector.findPose(img, draw=True)
+        #  Get posture data 
+        positions = detector.findPosition(img)
+
+        if positions:
+            global fall_count
+            #  Get the angle for sitting position  
+            angle = detector.findAngle(img, 11, 23, 25)
+            
+            print(positions[11][2],positions[23][2], positions[25][2], positions[27][2])
+            #Checking if person is standing
+            if (positions[11][2] < positions[23][2]) and (positions[23][2] < positions[25][2]) and (positions[25][2] < positions[27][2]):
+                print("standing")
+                fall_count = 0
+            #Checking if person is lying down 
+            elif (abs(positions[11][2] - positions[23][2]) < 100) and (abs(positions[23][2] - positions[25][2]) < 100) and (abs(positions[25][2] - positions[27][2]) < 100):
+                print("lie down")
+                fall_count = 0
+            #Checking if person is sitting
+            elif (angle >= 60 or angle <= 120):
+                print("sitting")
+                fall_count = 0
+            #Checking if person is falling    
+            elif (positions[11][2] < 500) and (positions[23][2] < 500) and (positions[25][2] < 500) and (positions[27][2]< 500):
+                fall_count= fall_count+1
+                if fall_count>=3:
+                    print("fallen")
+                    fall_count = 0
+         
+        
+            #  Progress bar length 
+            bar = np.interp(angle, (50, 130), (w // 2 - 100, w // 2 + 100))
+            cv2.rectangle(img, (w // 2 - 100, h - 150), (int(bar), h - 100), (0, 255, 0), cv2.FILLED)
+            #  The angle is less than 55 Du thinks that sitting up 
+            global dir
+            global count
+            if angle <= 55:
+                if dir == 0:
+                    count = count + 0.5
+                    dir = 1
+            #  The angle is greater than 120 I think lying down 
+            if angle >= 120:
+                if dir == 1:
+                    count = count + 0.5
+                    dir = 0
+            cv2.putText(img, str(int(count)), (w // 2, h // 2), cv2.FONT_HERSHEY_SIMPLEX, 10, (255, 255, 255), 20, cv2.LINE_AA)
+    #  Turn off camera 
+    cap.release()
+    
+def Alarm_Medication():
+    
+    now = datetime.datetime.now()
+    alarm_time = now.replace(hour=21, minute=10, second=0, microsecond=0)
+    alarm_time1 = now.replace(hour=21, minute=10, second=59, microsecond=0)
+    if alarm_time < now and alarm_time1 > now:
+        print("Medication Reminder")
+        
+while True:
+    Distance_Xvalue()
+    
+    time.sleep(2)
+        
+    PositionDet_Stickman()
+    
+    Alarm_Medication()
+    
